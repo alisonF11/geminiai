@@ -1,0 +1,61 @@
+import base64
+import os
+from google import genai
+from google.genai import types
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+
+# Initialize the Google GenAI client
+client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
+model = "gemini-2.0-flash"
+generate_content_config = types.GenerateContentConfig(
+    temperature=1,
+    top_p=0.95,
+    top_k=40,
+    max_output_tokens=8192,
+    response_mime_type="text/plain",
+)
+
+# Memory to store conversation history
+conversation_memory = {}
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Hello! I'm your friendly bot with memory. How can I assist you today?")
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    user_input = update.message.text
+
+    # Retrieve or initialize conversation history for the user
+    if user_id not in conversation_memory:
+        conversation_memory[user_id] = []
+
+    conversation_memory[user_id].append(types.Content(role="user", parts=[types.Part.from_text(text=user_input)]))
+
+    # Prepare contents for the API call
+    contents = conversation_memory[user_id] + [
+        types.Content(role="user", parts=[types.Part.from_text(text="INSERT_INPUT_HERE")])
+    ]
+
+    # Generate response from the model
+    response_text = ""
+    for chunk in client.models.generate_content_stream(
+        model=model, contents=contents, config=generate_content_config
+    ):
+        response_text += chunk.text
+
+    # Add model's response to the conversation history
+    conversation_memory[user_id].append(types.Content(role="model", parts=[types.Part.from_text(text=response_text)]))
+
+    await update.message.reply_text(response_text)
+
+if __name__ == '__main__':
+    application = ApplicationBuilder().token(os.environ.get("7708331542:AAEkSO_E9c6WRZnK0BxO49UXLWOonLD85pM")).build()
+
+    start_handler = CommandHandler('start', start)
+    message_handler = MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
+
+    application.add_handler(start_handler)
+    application.add_handler(message_handler)
+
+    application.run_polling()
