@@ -1,7 +1,6 @@
 import logging
-import asyncio
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters, CallbackQueryHandler
+import telebot
+from telebot import types
 from pycoingecko import CoinGeckoAPI
 
 logging.basicConfig(
@@ -9,98 +8,97 @@ logging.basicConfig(
     level=logging.INFO
 )
 
+TOKEN = "YOUR TELEGRAM BOT TOKEN"  # Replace with your bot token
+bot = telebot.TeleBot(TOKEN)
 cg = CoinGeckoAPI()
-admins = []  # Replace with the actual Telegram user IDs of the admins
-blocked_users = set()
+admins = [123456789]  # Replace with actual admin IDs
+blocked_users = set()  # In-memory blocked users; not persistent
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    if user.id in blocked_users:
-        await update.message.reply_text("You are blocked from using this bot.")
+@bot.message_handler(commands=['start'])
+def start_handler(message):
+    if message.from_user.id in blocked_users:
+        bot.reply_to(message, "You are blocked from using this bot.")
         return
-    await update.message.reply_text(f"Hello {user.first_name}, I'm a crypto price bot!")
+    bot.reply_to(message, f"Hello {message.from_user.first_name}, I'm a crypto price bot!")
 
-async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id in blocked_users:
-        await update.message.reply_text("You are blocked from using this bot.")
+@bot.message_handler(commands=['price'])
+def price_handler(message):
+    if message.from_user.id in blocked_users:
+        bot.reply_to(message, "You are blocked from using this bot.")
         return
-
-    if context.args:
-        ticker = context.args[0]
+    parts = message.text.split()
+    if len(parts) < 2:
+        bot.reply_to(message, "Please provide a ticker symbol. Usage: /price <ticker>")
+        return
+    ticker = parts[1].lower()
+    try:
         price_info = cg.get_price(ids=ticker, vs_currencies='usd')
-        if price_info:
-            price = price_info.get(ticker, {}).get('usd')
-            if price:
-                keyboard = [[InlineKeyboardButton("Refresh", callback_data=f'price_{ticker}')]]
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                await update.message.reply_text(f"The current price of {ticker} is ${price}", reply_markup=reply_markup)
-            else:
-                await update.message.reply_text("Couldn't fetch the price. Please check the ticker symbol.")
+        price = price_info.get(ticker, {}).get('usd')
+        if price:
+            keyboard = types.InlineKeyboardMarkup()
+            keyboard.add(types.InlineKeyboardButton("Refresh", callback_data=f'price_{ticker}'))
+            bot.send_message(message.chat.id, f"The current price of {ticker} is ${price}", reply_markup=keyboard)
         else:
-            await update.message.reply_text("Invalid ticker symbol.")
-    else:
-        await update.message.reply_text("Please provide a ticker symbol. Usage: /price <ticker>")
+            bot.send_message(message.chat.id, "Couldn't fetch the price. Please check the ticker symbol.")
+    except Exception as e:
+        logging.error(f"Error fetching price: {e}")
+        bot.send_message(message.chat.id, "An error occurred while fetching the price.")
 
-async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    if query.data.startswith('price_'):
-        ticker = query.data.split('_')[1]
+@bot.callback_query_handler(func=lambda call: call.data.startswith("price_"))
+def callback_price(call):
+    ticker = call.data.split('_', 1)[1]
+    try:
         price_info = cg.get_price(ids=ticker, vs_currencies='usd')
-        if price_info:
-            price = price_info.get(ticker, {}).get('usd')
-            if price:
-                keyboard = [[InlineKeyboardButton("Refresh", callback_data=f'price_{ticker}')]]
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                await query.edit_message_text(f"The current price of {ticker} is ${price}", reply_markup=reply_markup)
-            else:
-                await query.edit_message_text("Couldn't fetch the price. Please check the ticker symbol.")
+        price = price_info.get(ticker, {}).get('usd')
+        if price:
+            keyboard = types.InlineKeyboardMarkup()
+            keyboard.add(types.InlineKeyboardButton("Refresh", callback_data=f'price_{ticker}'))
+            bot.edit_message_text(chat_id=call.message.chat.id,
+                                  message_id=call.message.message_id,
+                                  text=f"The current price of {ticker} is ${price}",
+                                  reply_markup=keyboard)
+        else:
+            bot.edit_message_text(chat_id=call.message.chat.id,
+                                  message_id=call.message.message_id,
+                                  text="Couldn't fetch the price. Please check the ticker symbol.")
+    except Exception as e:
+        logging.error(f"Error fetching price: {e}")
+        bot.edit_message_text(chat_id=call.message.chat.id,
+                              message_id=call.message.message_id,
+                              text="An error occurred while fetching the price.")
 
-async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id not in admins:
-        await update.message.reply_text("You are not authorized to use this command.")
+@bot.message_handler(commands=['admin'])
+def admin_handler(message):
+    if message.from_user.id not in admins:
+        bot.reply_to(message, "You are not authorized to use this command.")
         return
-    
-    command = context.args[0] if context.args else ''
-    if command == 'list':
-        users = context.application.user_data.keys()
-        await update.message.reply_text(f"Users: {', '.join(map(str, users))}")
-    elif command == 'block':
-        if len(context.args) > 1:
-            user_id = int(context.args[1])
+    parts = message.text.split()
+    if len(parts) < 2:
+        bot.reply_to(message, "Invalid admin command. Available commands: list, block, unblock, message")
+        return
+    command = parts[1]
+    try:
+        if command == 'list':
+            users = list(blocked_users)
+            bot.send_message(message.chat.id, f"Blocked users: {', '.join(map(str, users))}")
+        elif command == 'block' and len(parts) > 2:
+            user_id = int(parts[2])
             blocked_users.add(user_id)
-            await update.message.reply_text(f"User {user_id} has been blocked.")
-        else:
-            await update.message.reply_text("Please provide a user ID to block. Usage: /admin block <user_id>")
-    elif command == 'unblock':
-        if len(context.args) > 1:
-            user_id = int(context.args[1])
+            bot.send_message(message.chat.id, f"User {user_id} has been blocked.")
+        elif command == 'unblock' and len(parts) > 2:
+            user_id = int(parts[2])
             blocked_users.discard(user_id)
-            await update.message.reply_text(f"User {user_id} has been unblocked.")
+            bot.send_message(message.chat.id, f"User {user_id} has been unblocked.")
+        elif command == 'message' and len(parts) > 3:
+            user_id = int(parts[2])
+            text_message = " ".join(parts[3:])
+            bot.send_message(user_id, text_message)
+            bot.send_message(message.chat.id, f"Message sent to {user_id}.")
         else:
-            await update.message.reply_text("Please provide a user ID to unblock. Usage: /admin unblock <user_id>")
-    elif command == 'message':
-        if len(context.args) > 2:
-            user_id = int(context.args[1])
-            message = ' '.join(context.args[2:])
-            await context.bot.send_message(chat_id=user_id, text=message)
-            await update.message.reply_text(f"Message sent to {user_id}.")
-        else:
-            await update.message.reply_text("Please provide a user ID and a message. Usage: /admin message <user_id> <message>")
-    else:
-        await update.message.reply_text("Invalid admin command. Available commands: list, block, unblock, message")
-
-async def main():
-    application = ApplicationBuilder().token("7708331542:AAEkSO_E9c6WRZnK0BxO49UXLWOonLD85pM").build()
-
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("price", price))
-    application.add_handler(CallbackQueryHandler(button))
-    application.add_handler(CommandHandler("admin", admin))
-
-    await application.start()
-    await application.updater.start_polling()
-    await application.idle()
+            bot.send_message(message.chat.id, "Invalid admin command usage.")
+    except Exception as e:
+        logging.error(f"Admin command error: {e}")
+        bot.send_message(message.chat.id, "An error occurred while executing the admin command.")
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    bot.polling()
