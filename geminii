@@ -1,14 +1,12 @@
-import os
 import logging
 import google.generativeai as genai
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, CommandHandler, ContextTypes
 import requests
-import tempfile
 
 # Configuration du bot Telegram
 TELEGRAM_BOT_TOKEN = "7708331542:AAEkSO_E9c6WRZnK0BxO49UXLWOonLD85pM"
-GEMINI_API_KEY = "AIzaSyCvvmosqHfcb08skdw___PlnFhUid7-ErQ"
+GEMINI_API_KEY = "AIzaSyCvvmosqHfcb08skdw___PlnFhUid7-ErQ"  # Clé chiffrée enregistrée
 
 # Configuration de l'API Gemini
 genai.configure(api_key=GEMINI_API_KEY)
@@ -51,40 +49,31 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     photo_file = await update.message.photo[-1].get_file()  # Obtenir la meilleure qualité
     photo_url = photo_file.file_path
 
-    # Télécharger l'image temporairement
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as temp_image:
-        response = requests.get(photo_url)
-        temp_image.write(response.content)
-        temp_image_path = temp_image.name
+    # Télécharger l'image localement
+    image_path = f"downloads/image_{user_id}.jpg"
+    response = requests.get(photo_url)
+    with open(image_path, "wb") as file:
+        file.write(response.content)
 
     # Envoyer l'image à Gemini pour analyse
     chat_session = model.start_chat()
-    gemini_response = chat_session.send_message(["Analyze this image:", temp_image_path])
+    gemini_response = chat_session.send_message(["Analyze this image:", image_path])
 
-    await update.message.reply_text(f"Gemini Analysis:\n{gemini_response.text}")
-
-    # Supprimer l'image après l'analyse
-    os.remove(temp_image_path)
+    await update.message.reply_text(gemini_response.text)
 
 # Fonction pour gérer les messages vocaux (audio)
 async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
     audio_file = await update.message.voice.get_file()
     audio_url = audio_file.file_path
 
-    # Télécharger l'audio temporairement
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".ogg") as temp_audio:
-        response = requests.get(audio_url)
-        temp_audio.write(response.content)
-        temp_audio_path = temp_audio.name
+    # Télécharger l'audio localement
+    audio_path = f"downloads/audio_{update.message.from_user.id}.ogg"
+    response = requests.get(audio_url)
+    with open(audio_path, "wb") as file:
+        file.write(response.content)
 
-    # Simuler une réponse (Gemini ne supporte pas l'audio pour le moment)
-    response_text = "I received your audio! Currently, I can't process voice messages, but I'm working on it!"
-    
-    await update.message.reply_text(response_text)
-
-    # Supprimer l'audio après traitement
-    os.remove(temp_audio_path)
+    # Simuler une réponse (l'API Gemini ne supporte pas encore l'audio)
+    await update.message.reply_text("I received your audio! Currently, I can't process voice messages, but I'm working on it!")
 
 # Fonction pour la commande /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
