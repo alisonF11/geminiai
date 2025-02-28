@@ -6,7 +6,7 @@ from telegram.ext import ApplicationBuilder, MessageHandler, filters, CommandHan
 import requests
 
 # Configuration du bot Telegram
-TELEGRAM_BOT_TOKEN = "7708331542:AAEkSO_E9c6WRZnK0BxO49UXLWOonLD85pM"
+TELEGRAM_BOT_TOKEN = "7935144217:AAFrnoWfqQrSvt_u8MxTttRUAeTvTpjNX8E"
 GEMINI_API_KEY = "AIzaSyCvvmosqHfcb08skdw___PlnFhUid7-ErQ"  # Clé chiffrée enregistrée
 
 # Configuration de l'API Gemini
@@ -38,7 +38,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             {"role": "user", "parts": ["Hi"]},
             {"role": "model", "parts": ["Hi there! How can I help you today?"]},
         ])
-
+    
     chat_session = user_sessions[user_id]
     response = chat_session.send_message(user_message)
 
