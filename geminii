@@ -1,104 +1,132 @@
-import logging
+import logging, time
 import telebot
 from telebot import types
 from pycoingecko import CoinGeckoAPI
 
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-TOKEN = "YOUR TELEGRAM BOT TOKEN"  # Replace with your bot token
+TOKEN = "7708331542:AAEkSO_E9c6WRZnK0BxO49UXLWOonLD85pM"  # Replace with your bot token
 bot = telebot.TeleBot(TOKEN)
 cg = CoinGeckoAPI()
 admins = [123456789]  # Replace with actual admin IDs
-blocked_users = set()  # In-memory blocked users; not persistent
+blocked_users = set()  # In-memory blocked users (not persistent)
+cache = {}  # Simple cache: {ticker: (timestamp, data)}
+
+def get_coin_data(ticker):
+    now = time.time()
+    if ticker in cache and now - cache[ticker][0] < 10:
+        return cache[ticker][1]
+    data = cg.get_coin_by_id(ticker, localization=False)
+    cache[ticker] = (now, data)
+    return data
+
+def format_variation(change):
+    if change is None:
+        return "N/A"
+    arrow = "🔺" if change >= 0 else "🔻"
+    return f"{change:.2f}% {arrow}"
 
 @bot.message_handler(commands=['start'])
 def start_handler(message):
     if message.from_user.id in blocked_users:
-        bot.reply_to(message, "You are blocked from using this bot.")
+        bot.reply_to(message, "🚫 You are blocked from using this bot.")
         return
-    bot.reply_to(message, f"Hello {message.from_user.first_name}, I'm a crypto price bot!")
+    bot.reply_to(message, f"👋 Hello {message.from_user.first_name}, I'm a crypto price bot!")
 
 @bot.message_handler(commands=['price'])
 def price_handler(message):
     if message.from_user.id in blocked_users:
-        bot.reply_to(message, "You are blocked from using this bot.")
+        bot.reply_to(message, "🚫 You are blocked from using this bot.")
         return
     parts = message.text.split()
     if len(parts) < 2:
-        bot.reply_to(message, "Please provide a ticker symbol. Usage: /price <ticker>")
+        bot.reply_to(message, "Usage: /price <ticker>")
         return
     ticker = parts[1].lower()
     try:
-        price_info = cg.get_price(ids=ticker, vs_currencies='usd')
-        price = price_info.get(ticker, {}).get('usd')
-        if price:
-            keyboard = types.InlineKeyboardMarkup()
-            keyboard.add(types.InlineKeyboardButton("Refresh", callback_data=f'price_{ticker}'))
-            bot.send_message(message.chat.id, f"The current price of {ticker} is ${price}", reply_markup=keyboard)
-        else:
-            bot.send_message(message.chat.id, "Couldn't fetch the price. Please check the ticker symbol.")
+        data = get_coin_data(ticker)
+        market = data.get("market_data", {})
+        price = market.get("current_price", {}).get("usd")
+        change_1h = market.get("price_change_percentage_1h_in_currency", {}).get("usd")
+        change_24h = market.get("price_change_percentage_24h_in_currency", {}).get("usd")
+        change_30d = market.get("price_change_percentage_30d_in_currency", {}).get("usd")
+        change_1m = change_1h / 60 if change_1h is not None else None
+        if price is None:
+            bot.send_message(message.chat.id, "⚠️ Couldn't fetch the price. Check the ticker symbol.")
+            return
+        response = (f"💰 Prix actuel de {ticker.capitalize()}: ${price}\n"
+                    f"⏱ 1m: {format_variation(change_1m)}\n"
+                    f"🕒 1h: {format_variation(change_1h)}\n"
+                    f"📅 1j: {format_variation(change_24h)}\n"
+                    f"📆 1m: {format_variation(change_30d)}")
+        keyboard = types.InlineKeyboardMarkup()
+        keyboard.add(types.InlineKeyboardButton("Refresh 🔄", callback_data=f'price_{ticker}'))
+        bot.send_message(message.chat.id, response, reply_markup=keyboard)
     except Exception as e:
-        logging.error(f"Error fetching price: {e}")
-        bot.send_message(message.chat.id, "An error occurred while fetching the price.")
+        logging.error(f"Error fetching data for {ticker}: {e}")
+        bot.send_message(message.chat.id, "⚠️ An error occurred while fetching the price.")
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("price_"))
 def callback_price(call):
     ticker = call.data.split('_', 1)[1]
     try:
-        price_info = cg.get_price(ids=ticker, vs_currencies='usd')
-        price = price_info.get(ticker, {}).get('usd')
-        if price:
-            keyboard = types.InlineKeyboardMarkup()
-            keyboard.add(types.InlineKeyboardButton("Refresh", callback_data=f'price_{ticker}'))
-            bot.edit_message_text(chat_id=call.message.chat.id,
-                                  message_id=call.message.message_id,
-                                  text=f"The current price of {ticker} is ${price}",
-                                  reply_markup=keyboard)
-        else:
-            bot.edit_message_text(chat_id=call.message.chat.id,
-                                  message_id=call.message.message_id,
-                                  text="Couldn't fetch the price. Please check the ticker symbol.")
+        data = get_coin_data(ticker)
+        market = data.get("market_data", {})
+        price = market.get("current_price", {}).get("usd")
+        change_1h = market.get("price_change_percentage_1h_in_currency", {}).get("usd")
+        change_24h = market.get("price_change_percentage_24h_in_currency", {}).get("usd")
+        change_30d = market.get("price_change_percentage_30d_in_currency", {}).get("usd")
+        change_1m = change_1h / 60 if change_1h is not None else None
+        if price is None:
+            bot.edit_message_text(chat_id=call.message.chat.id, message_id=call.message.message_id,
+                                  text="⚠️ Couldn't fetch the price. Check the ticker symbol.")
+            return
+        response = (f"💰 Prix actuel de {ticker.capitalize()}: ${price}\n"
+                    f"⏱ 1m: {format_variation(change_1m)}\n"
+                    f"🕒 1h: {format_variation(change_1h)}\n"
+                    f"📅 1j: {format_variation(change_24h)}\n"
+                    f"📆 1m: {format_variation(change_30d)}")
+        keyboard = types.InlineKeyboardMarkup()
+        keyboard.add(types.InlineKeyboardButton("Refresh 🔄", callback_data=f'price_{ticker}'))
+        bot.edit_message_text(chat_id=call.message.chat.id, message_id=call.message.message_id,
+                              text=response, reply_markup=keyboard)
     except Exception as e:
-        logging.error(f"Error fetching price: {e}")
-        bot.edit_message_text(chat_id=call.message.chat.id,
-                              message_id=call.message.message_id,
-                              text="An error occurred while fetching the price.")
+        logging.error(f"Error in callback for {ticker}: {e}")
+        bot.edit_message_text(chat_id=call.message.chat.id, message_id=call.message.message_id,
+                              text="⚠️ An error occurred while fetching the price.")
 
 @bot.message_handler(commands=['admin'])
 def admin_handler(message):
     if message.from_user.id not in admins:
-        bot.reply_to(message, "You are not authorized to use this command.")
+        bot.reply_to(message, "🚫 You are not authorized to use this command.")
         return
     parts = message.text.split()
     if len(parts) < 2:
-        bot.reply_to(message, "Invalid admin command. Available commands: list, block, unblock, message")
+        bot.reply_to(message, "Usage: /admin <list|block|unblock|message>")
         return
     command = parts[1]
     try:
         if command == 'list':
             users = list(blocked_users)
-            bot.send_message(message.chat.id, f"Blocked users: {', '.join(map(str, users))}")
+            bot.send_message(message.chat.id, f"🚫 Blocked users: {', '.join(map(str, users))}")
         elif command == 'block' and len(parts) > 2:
             user_id = int(parts[2])
             blocked_users.add(user_id)
-            bot.send_message(message.chat.id, f"User {user_id} has been blocked.")
+            bot.send_message(message.chat.id, f"🚫 User {user_id} has been blocked.")
         elif command == 'unblock' and len(parts) > 2:
             user_id = int(parts[2])
             blocked_users.discard(user_id)
-            bot.send_message(message.chat.id, f"User {user_id} has been unblocked.")
+            bot.send_message(message.chat.id, f"✅ User {user_id} has been unblocked.")
         elif command == 'message' and len(parts) > 3:
             user_id = int(parts[2])
             text_message = " ".join(parts[3:])
             bot.send_message(user_id, text_message)
-            bot.send_message(message.chat.id, f"Message sent to {user_id}.")
+            bot.send_message(message.chat.id, f"📩 Message sent to {user_id}.")
         else:
-            bot.send_message(message.chat.id, "Invalid admin command usage.")
+            bot.send_message(message.chat.id, "⚠️ Invalid admin command usage.")
     except Exception as e:
         logging.error(f"Admin command error: {e}")
-        bot.send_message(message.chat.id, "An error occurred while executing the admin command.")
+        bot.send_message(message.chat.id, "⚠️ An error occurred while executing the admin command.")
 
 if __name__ == '__main__':
-    bot.polling()
+    bot.polling(none_stop=True)
