@@ -1,87 +1,106 @@
 import os
 import logging
-from google import genai
-from google.genai import types
+import google.generativeai as genai
 from telegram import Update
-from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, filters, CallbackContext
+from telegram.ext import ApplicationBuilder, MessageHandler, filters, CommandHandler, ContextTypes
+import requests
+import tempfile
 
 # Configuration du bot Telegram
-TOKEN = "7708331542:AAEkSO_E9c6WRZnK0BxO49UXLWOonLD85pM"
-GEMINI_API_KEY = "AIzaSyCvvmosqHfcb08skdw___PlnFhUid7-ErQ"  # Remplace par ta vraie clé API
+TELEGRAM_BOT_TOKEN = "7708331542:AAEkSO_E9c6WRZnK0BxO49UXLWOonLD85pM"
+GEMINI_API_KEY = "AIzaSyCvvmosqHfcb08skdw___PlnFhUid7-ErQ"
 
-# Initialisation du client Gemini
-genai_client = genai.Client(api_key=GEMINI_API_KEY)
+# Configuration de l'API Gemini
+genai.configure(api_key=GEMINI_API_KEY)
 
-# Dictionnaire pour stocker l'historique des conversations des utilisateurs
-user_histories = {}
+generation_config = {
+    "temperature": 1,
+    "top_p": 0.95,
+    "top_k": 40,
+    "max_output_tokens": 8192,
+    "response_mime_type": "text/plain",
+}
 
-# Fonction pour générer une réponse avec Gemini en gardant la mémoire
-def generate_response(user_id, user_input):
-    model = "gemini-2.0-flash"
+model = genai.GenerativeModel(
+    model_name="gemini-2.0-flash-exp",
+    generation_config=generation_config,
+)
 
-    # Récupération de l'historique de l'utilisateur
-    if user_id not in user_histories:
-        user_histories[user_id] = []
+# Dictionnaire pour stocker l'historique des conversations par utilisateur
+user_sessions = {}
 
-    history = user_histories[user_id]
+# Fonction pour gérer les messages texte
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    user_message = update.message.text
 
-    # Ajouter le message de l'utilisateur à l'historique
-    history.append(types.Content(role="user", parts=[types.Part.from_text(user_input)]))
+    if user_id not in user_sessions:
+        user_sessions[user_id] = model.start_chat(history=[
+            {"role": "user", "parts": ["Hi"]},
+            {"role": "model", "parts": ["Hi there! How can I help you today?"]},
+        ])
 
-    # Configuration de la génération de réponse
-    generate_config = types.GenerateContentConfig(
-        temperature=1,
-        top_p=0.95,
-        top_k=40,
-        max_output_tokens=8192,
-        response_mime_type="text/plain",
-    )
+    chat_session = user_sessions[user_id]
+    response = chat_session.send_message(user_message)
 
-    # Génération de la réponse par Gemini
-    try:
-        response = genai_client.models.generate_content(
-            model=model,
-            contents=history,
-            config=generate_config
-        )
+    await update.message.reply_text(response.text)
 
-        # Récupérer la réponse et l'ajouter à l'historique
-        response_text = response.candidates[0].content.parts[0].text
-        history.append(types.Content(role="model", parts=[types.Part.from_text(response_text)]))
+# Fonction pour gérer les images
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    photo_file = await update.message.photo[-1].get_file()  # Obtenir la meilleure qualité
+    photo_url = photo_file.file_path
 
-        # Limiter l'historique à 20 messages pour éviter une surcharge
-        if len(history) > 20:
-            history.pop(0)
+    # Télécharger l'image temporairement
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as temp_image:
+        response = requests.get(photo_url)
+        temp_image.write(response.content)
+        temp_image_path = temp_image.name
 
-        return response_text
-    except Exception as e:
-        return f"Erreur lors de la génération de la réponse : {str(e)}"
+    # Envoyer l'image à Gemini pour analyse
+    chat_session = model.start_chat()
+    gemini_response = chat_session.send_message(["Analyze this image:", temp_image_path])
 
-# Fonction pour gérer les messages des utilisateurs
-async def handle_message(update: Update, context: CallbackContext):
-    user_id = update.message.chat_id
-    user_input = update.message.text
+    await update.message.reply_text(f"Gemini Analysis:\n{gemini_response.text}")
 
-    response = generate_response(user_id, user_input)
+    # Supprimer l'image après l'analyse
+    os.remove(temp_image_path)
 
-    await update.message.reply_text(response)
+# Fonction pour gérer les messages vocaux (audio)
+async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    audio_file = await update.message.voice.get_file()
+    audio_url = audio_file.file_path
 
-# Fonction pour démarrer le bot
-async def start(update: Update, context: CallbackContext):
-    await update.message.reply_text("Salut ! Je suis un bot avec une mémoire. Parle-moi et je me souviendrai de nos conversations !")
+    # Télécharger l'audio temporairement
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".ogg") as temp_audio:
+        response = requests.get(audio_url)
+        temp_audio.write(response.content)
+        temp_audio_path = temp_audio.name
 
-# Initialisation de l'application Telegram
+    # Simuler une réponse (Gemini ne supporte pas l'audio pour le moment)
+    response_text = "I received your audio! Currently, I can't process voice messages, but I'm working on it!"
+    
+    await update.message.reply_text(response_text)
+
+    # Supprimer l'audio après traitement
+    os.remove(temp_audio_path)
+
+# Fonction pour la commande /start
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Hello! Send me a text, image, or audio, and I'll try to respond.")
+
+# Configuration du bot Telegram
 def main():
-    app = ApplicationBuilder().token(TOKEN).build()
+    logging.basicConfig(level=logging.INFO)
+    app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
 
-    # Commande /start
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    app.add_handler(MessageHandler(filters.VOICE, handle_audio))
 
-    # Gérer tous les messages
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
-    # Lancer le bot
-    print("Bot en cours d'exécution...")
+    print("Bot is running...")
     app.run_polling()
 
 if __name__ == "__main__":
