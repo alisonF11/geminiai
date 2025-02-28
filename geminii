@@ -1,97 +1,106 @@
-import os
 import logging
-import google.generativeai as genai
-from telegram import Update
-from telegram.ext import ApplicationBuilder, MessageHandler, filters, CommandHandler, ContextTypes
-import requests
+import asyncio
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters, CallbackQueryHandler
+from pycoingecko import CoinGeckoAPI
 
-# Configuration du bot Telegram
-TELEGRAM_BOT_TOKEN = "7935144217:AAFrnoWfqQrSvt_u8MxTttRUAeTvTpjNX8E"
-GEMINI_API_KEY = "AIzaSyCvvmosqHfcb08skdw___PlnFhUid7-ErQ"  # Clé chiffrée enregistrée
-
-# Configuration de l'API Gemini
-genai.configure(api_key=GEMINI_API_KEY)
-
-generation_config = {
-    "temperature": 1,
-    "top_p": 0.95,
-    "top_k": 40,
-    "max_output_tokens": 8192,
-    "response_mime_type": "text/plain",
-}
-
-model = genai.GenerativeModel(
-    model_name="gemini-2.0-flash-exp",
-    generation_config=generation_config,
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
 )
 
-# Dictionnaire pour stocker l'historique des conversations par utilisateur
-user_sessions = {}
+cg = CoinGeckoAPI()
+admins = []  # Replace with the actual Telegram user IDs of the admins
+blocked_users = set()
 
-# Fonction pour gérer les messages texte
-async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    user_message = update.message.text
-
-    if user_id not in user_sessions:
-        user_sessions[user_id] = model.start_chat(history=[
-            {"role": "user", "parts": ["Hi"]},
-            {"role": "model", "parts": ["Hi there! How can I help you today?"]},
-        ])
-    
-    chat_session = user_sessions[user_id]
-    response = chat_session.send_message(user_message)
-
-    await update.message.reply_text(response.text)
-
-# Fonction pour gérer les images
-async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    photo_file = await update.message.photo[-1].get_file()  # Obtenir la meilleure qualité
-    photo_url = photo_file.file_path
-
-    # Télécharger l'image localement
-    image_path = f"downloads/image_{user_id}.jpg"
-    response = requests.get(photo_url)
-    with open(image_path, "wb") as file:
-        file.write(response.content)
-
-    # Envoyer l'image à Gemini pour analyse
-    chat_session = model.start_chat()
-    gemini_response = chat_session.send_message(["Analyze this image:", image_path])
-
-    await update.message.reply_text(gemini_response.text)
-
-# Fonction pour gérer les messages vocaux (audio)
-async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    audio_file = await update.message.voice.get_file()
-    audio_url = audio_file.file_path
-
-    # Télécharger l'audio localement
-    audio_path = f"downloads/audio_{update.message.from_user.id}.ogg"
-    response = requests.get(audio_url)
-    with open(audio_path, "wb") as file:
-        file.write(response.content)
-
-    # Simuler une réponse (l'API Gemini ne supporte pas encore l'audio)
-    await update.message.reply_text("I received your audio! Currently, I can't process voice messages, but I'm working on it!")
-
-# Fonction pour la commande /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Hello! Send me a text, image, or audio, and I'll try to respond.")
+    user = update.effective_user
+    if user.id in blocked_users:
+        await update.message.reply_text("You are blocked from using this bot.")
+        return
+    await update.message.reply_text(f"Hello {user.first_name}, I'm a crypto price bot!")
 
-# Configuration du bot Telegram
-def main():
-    logging.basicConfig(level=logging.INFO)
-    app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
+async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id in blocked_users:
+        await update.message.reply_text("You are blocked from using this bot.")
+        return
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-    app.add_handler(MessageHandler(filters.VOICE, handle_audio))
+    if context.args:
+        ticker = context.args[0]
+        price_info = cg.get_price(ids=ticker, vs_currencies='usd')
+        if price_info:
+            price = price_info.get(ticker, {}).get('usd')
+            if price:
+                keyboard = [[InlineKeyboardButton("Refresh", callback_data=f'price_{ticker}')]]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                await update.message.reply_text(f"The current price of {ticker} is ${price}", reply_markup=reply_markup)
+            else:
+                await update.message.reply_text("Couldn't fetch the price. Please check the ticker symbol.")
+        else:
+            await update.message.reply_text("Invalid ticker symbol.")
+    else:
+        await update.message.reply_text("Please provide a ticker symbol. Usage: /price <ticker>")
 
-    print("Bot is running...")
-    app.run_polling()
+async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if query.data.startswith('price_'):
+        ticker = query.data.split('_')[1]
+        price_info = cg.get_price(ids=ticker, vs_currencies='usd')
+        if price_info:
+            price = price_info.get(ticker, {}).get('usd')
+            if price:
+                keyboard = [[InlineKeyboardButton("Refresh", callback_data=f'price_{ticker}')]]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                await query.edit_message_text(f"The current price of {ticker} is ${price}", reply_markup=reply_markup)
+            else:
+                await query.edit_message_text("Couldn't fetch the price. Please check the ticker symbol.")
 
-if __name__ == "__main__":
-    main()
+async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in admins:
+        await update.message.reply_text("You are not authorized to use this command.")
+        return
+    
+    command = context.args[0] if context.args else ''
+    if command == 'list':
+        users = context.application.user_data.keys()
+        await update.message.reply_text(f"Users: {', '.join(map(str, users))}")
+    elif command == 'block':
+        if len(context.args) > 1:
+            user_id = int(context.args[1])
+            blocked_users.add(user_id)
+            await update.message.reply_text(f"User {user_id} has been blocked.")
+        else:
+            await update.message.reply_text("Please provide a user ID to block. Usage: /admin block <user_id>")
+    elif command == 'unblock':
+        if len(context.args) > 1:
+            user_id = int(context.args[1])
+            blocked_users.discard(user_id)
+            await update.message.reply_text(f"User {user_id} has been unblocked.")
+        else:
+            await update.message.reply_text("Please provide a user ID to unblock. Usage: /admin unblock <user_id>")
+    elif command == 'message':
+        if len(context.args) > 2:
+            user_id = int(context.args[1])
+            message = ' '.join(context.args[2:])
+            await context.bot.send_message(chat_id=user_id, text=message)
+            await update.message.reply_text(f"Message sent to {user_id}.")
+        else:
+            await update.message.reply_text("Please provide a user ID and a message. Usage: /admin message <user_id> <message>")
+    else:
+        await update.message.reply_text("Invalid admin command. Available commands: list, block, unblock, message")
+
+async def main():
+    application = ApplicationBuilder().token("7708331542:AAEkSO_E9c6WRZnK0BxO49UXLWOonLD85pM").build()
+
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("price", price))
+    application.add_handler(CallbackQueryHandler(button))
+    application.add_handler(CommandHandler("admin", admin))
+
+    await application.start()
+    await application.updater.start_polling()
+    await application.idle()
+
+if __name__ == '__main__':
+    asyncio.run(main())
